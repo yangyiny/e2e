@@ -54,7 +54,7 @@ class TransfuserAgent(AbstractAgent):
         self.init_from_pretrained()
 
     def init_from_pretrained(self):
-        # import ipdb; ipdb.set_trace()
+        import ipdb; ipdb.set_trace()
         if self._checkpoint_path:
             if torch.cuda.is_available():
                 checkpoint = torch.load(self._checkpoint_path)
@@ -125,7 +125,7 @@ class TransfuserAgent(AbstractAgent):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def get_coslr_optimizers(self):
-        # import ipdb; ipdb.set_trace()
+        import ipdb; ipdb.set_trace()
         optimizer_cfg = dict(type=self._config.optimizer_type, 
                             lr=self._lr, 
                             weight_decay=self._config.weight_decay,

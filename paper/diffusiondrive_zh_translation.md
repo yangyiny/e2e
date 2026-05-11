@@ -1,157 +1,493 @@
 # DiffusionDrive：用于端到端自动驾驶的截断扩散模型
 
 原文：`Liao 等 - 2025 - DiffusionDrive Truncated Diffusion Model for End-to-End Autonomous Driving.pdf`  
-作者：Bencheng Liao、Shaoyu Chen、Haoran Yin、Bo Jiang、Cheng Wang、Sixu Yan、Xinbang Zhang、Xiangyu Li、Ying Zhang、Qian Zhang、Xinggang Wang  
+作者：Bencheng Liao，Shaoyu Chen，Haoran Yin，Bo Jiang，Cheng Wang，Sixu Yan，Xinbang Zhang，Xiangyu Li，Ying Zhang，Qian Zhang，Xinggang Wang  
 机构：华中科技大学、地平线  
+版本：arXiv:2411.15139v3，2025 年 4 月 10 日  
 代码、模型与 Demo：<https://github.com/hustvl/DiffusionDrive>
+
+说明：本文档为按论文原始结构整理的中文全文翻译，尽量保留原文段落组织、术语、图表说明与附录内容。公式采用便于阅读的文字化排版；参考文献保留英文条目名称。
+
+---
 
 ## 摘要
 
-扩散模型近年来成为机器人策略学习中的强大生成技术，能够建模多模态动作分布。将这种能力用于端到端自动驾驶是一个有前景的方向。但机器人扩散策略通常需要大量去噪步骤，而交通场景更加动态、开放，这给实时生成多样化驾驶动作带来挑战。
+近年来，扩散模型已经成为机器人策略学习中的一种强大生成技术，能够对多模态动作分布进行建模。将这种能力用于端到端自动驾驶是一个很有前景的方向。然而，机器人扩散策略通常需要大量去噪步骤，而交通场景具有更强的动态性和更开放的世界属性，这给以实时速度生成多样化驾驶动作带来了巨大挑战。
 
-为了解决这些问题，本文提出截断扩散策略。它引入先验多模态 anchor，并截断扩散 schedule，使模型学习从 anchored Gaussian distribution 去噪到多模态驾驶动作分布。作者还设计了高效的级联扩散 decoder，以增强轨迹候选与条件场景上下文之间的交互。
+为了解决这些挑战，本文提出了一种新的截断扩散策略。该策略引入先验多模态 anchor，并对扩散日程进行截断，使模型能够学习从 anchored Gaussian distribution（锚定高斯分布）去噪到多模态驾驶动作分布的映射。此外，作者设计了一种高效的级联扩散解码器，以加强与条件场景上下文的交互。
 
-DiffusionDrive 相比 vanilla diffusion policy 将去噪步数减少 10 倍，只需 2 步即可生成更高质量、更具多样性的轨迹。在规划导向的 NAVSIM 数据集上，使用相同 ResNet-34 backbone，DiffusionDrive 达到 88.1 PDMS，并在 NVIDIA 4090 上以 45 FPS 实时运行。定性结果表明，它能在复杂场景中稳健生成多样且合理的驾驶动作。
+所提出的模型 DiffusionDrive 相比原始扩散策略将去噪步数减少了 10 倍，只需 2 步便能实现更优的多样性和生成质量。在面向规划的 NAVSIM 数据集上，在对齐的 ResNet-34 主干网络设置下，DiffusionDrive 在没有额外技巧的情况下取得了 88.1 的 PDMS，创下新纪录，并且在 NVIDIA 4090 上以 45 FPS 的实时速度运行。困难场景上的定性结果进一步验证了 DiffusionDrive 能够稳健地产生多样且合理的驾驶动作。
 
-## 1 引言
+## 1. 引言
 
-端到端自动驾驶希望从原始传感器输入直接学习驾驶策略。主流端到端规划器，如 Transfuser、UniAD、VAD，通常用 ego query 回归一条单模态轨迹。这种范式无法处理驾驶行为固有的不确定性和多模态性。
+近年来，随着感知模型的发展，端到端自动驾驶受到了广泛关注。这些感知模型涵盖检测、跟踪、在线建图等任务，能够直接从原始传感器输入中学习驾驶策略。这种数据驱动方法为传统基于规则的运动规划提供了一种可扩展且更鲁棒的替代方案，而传统方法往往难以泛化到复杂真实世界驾驶环境中。
 
-VADv2 引入大型固定 anchor 词表，例如 4096 或 8192 条候选轨迹，通过对 anchor 打分来覆盖更多驾驶行为。但这种固定词表受 anchor 数量和质量限制，面对词表外场景容易失败；同时，大量 anchor 也带来实时计算压力。
+为了有效地从数据中学习，主流端到端规划器，例如 Transfuser、UniAD、VAD，通常如图 1(a) 所示，从一个 ego-query 中回归出一条单模态轨迹。然而，这种范式没有考虑驾驶行为内在的不确定性和多模态属性。近期，VADv2 引入了一个由 anchor 轨迹构成的大型固定词表（4096 个 anchors），以离散化连续动作空间并覆盖更广泛的驾驶行为，然后如图 1(b) 所示，根据预测分数从这些 anchor 中进行采样。然而，这种大规模固定词表范式从根本上受限于 anchor 轨迹的数量和质量，在词表外场景中经常失效。此外，管理大量 anchor 对实时应用而言也带来了显著的计算挑战。
 
-扩散模型可以从高斯噪声中通过迭代去噪生成多模态动作，因此看起来适合自动驾驶。作者首先将 vanilla robotic diffusion policy 接到 Transfuser 上，得到 TransfuserDP。虽然性能有所提升，但出现两个问题：第一，DDIM 扩散策略需要约 20 步去噪，推理开销过大；第二，从不同高斯噪声采样得到的轨迹严重重叠，说明直接使用 vanilla diffusion 在交通场景中容易模式坍缩，难以产生有效多样性。
+与将动作空间离散化不同，扩散模型在机器人领域已被证明是一种强大的生成式决策策略，它能够通过迭代去噪过程，直接从高斯分布中采样出多模态且物理上合理的动作。这启发我们将扩散模型在机器人领域中的成功迁移到端到端自动驾驶中。为此，本文将原始机器人扩散策略应用于著名的单模态回归方法 Transfuser，提出了一个变体 TransfuserDP，用条件扩散模型替代原本确定性的 MLP 回归头。尽管 TransfuserDP 提升了规划性能，但出现了两个主要问题。
 
-作者的关键观察是：人类驾驶并不是从完全随机噪声中生成动作，而是遵循一些先验驾驶模式，并根据实时交通条件动态调整。因此，DiffusionDrive 将这些先验驾驶模式嵌入扩散策略中：把高斯分布划分成围绕先验 anchors 的多个子高斯分布，即 anchored Gaussian distribution。通过截断扩散 schedule，只在 anchor 周围引入少量噪声，模型从更合理的初始分布开始去噪，因此只需 2 步即可满足实时驾驶需求。
+第一，原始 DDIM 扩散策略中的 20 次去噪步骤会在推理时引入沉重的计算开销，如表 2 所示，这阻碍了其在自动驾驶中的实时应用。第二，从不同高斯噪声采样得到的轨迹彼此严重重叠，如图 2 所示。这说明，要让扩散模型适应动态、开放世界的交通场景并不是一件简单的事情。
 
-## 2 相关工作
+与原始扩散策略从随机高斯噪声中、在场景条件约束下采样动作不同，人类驾驶员会遵循既有的驾驶模式，并根据实时交通条件动态调整。这一观察促使作者将这些先验驾驶模式嵌入到扩散策略中：把高斯分布划分为多个围绕先验 anchor 为中心的子高斯分布，称为 anchored Gaussian distribution。其实现方式是截断扩散日程，仅在先验 anchor 周围加入少量高斯噪声，如图 3 所示。得益于扩散模型对多模态分布的表达能力，所提出的截断扩散策略可以有效覆盖潜在动作空间，而不需要像 VADv2 那样维护一个大规模固定 anchor 集。由于 anchored Gaussian distribution 提供了更合理的初始噪声样本，作者可以截断去噪过程，将所需步数从 20 降低到仅 2 步，从而显著加速，并满足自动驾驶的实时要求。
 
-**端到端自动驾驶**：UniAD 将感知、预测和规划统一为可微框架；VAD 使用向量化场景表示提升效率；Transfuser 使用相机和 LiDAR 融合进行规划。这些方法多为单轨迹回归或固定 anchor 选择，难以同时兼顾多样性和实时性。
+为了加强与条件场景上下文的交互，本文进一步提出了一种高效的基于 Transformer 的扩散解码器。该解码器不仅与感知模块产生的结构化 queries 交互，还通过稀疏 deformable attention 机制与鸟瞰图（BEV）和透视图（PV）特征交互。此外，作者引入了级联机制，在每一个去噪步骤内对轨迹重建进行迭代细化。
 
-**多模态规划与 anchor 方法**：VADv2 和 Hydra-MDP 使用大规模 anchor vocabulary 表示动作空间，但性能依赖 anchor 数量与覆盖质量，且计算成本较高。
+基于上述创新，本文提出了一个面向实时端到端自动驾驶的扩散模型 DiffusionDrive。作者在面向规划的 NAVSIM 数据集上，以非反应式仿真和闭环评估对该方法进行测试。在没有额外技巧的情况下，DiffusionDrive 在对齐的 ResNet-34 主干网络上于 NAVSIM 的 `navtest` 划分上取得了 88.1 的 PDMS，显著优于此前的最先进方法。即便与 NAVSIM 挑战赛获胜方案 Hydra-MDP-V8192-W-EP 相比，后者遵循 VADv2 的 anchor 词表采样范式，使用 8192 条 anchor 轨迹，并进一步结合后处理与附加监督，DiffusionDrive 依然通过直接从人类示范中学习、并在推理时不使用后处理的方式，超过其 1.6 PDMS，同时在 NVIDIA 4090 上以 45 FPS 的实时速度运行。作者还在流行的 nuScenes 数据集上通过开环评估验证了 DiffusionDrive 的优越性：在相同 ResNet-50 主干网络下，DiffusionDrive 相比 VAD 运行速度快 1.8 倍，L2 误差降低 20.8%，碰撞率降低 63.6%，展示出最先进的规划性能。
 
-**扩散策略**：Diffusion Policy 等机器人方法通过迭代去噪生成动作，但直接迁移到自动驾驶会遇到去噪步数多、轨迹重叠、模式坍缩等问题。
+本文的贡献可概括如下：
 
-**闭环规划评估**：NAVSIM/NA VSIM 基于 nuPlan，使用 PDM Score 对规划输出进行闭环或非反应式仿真评估，已成为规划导向自动驾驶 benchmark。
+1. 首次将扩散模型引入端到端自动驾驶领域，并提出一种新的截断扩散策略，以解决原始扩散策略直接适配交通场景时存在的模式坍缩和高计算开销问题。
+2. 设计了一种高效的基于 Transformer 的扩散解码器，以级联方式与条件信息交互，从而更好地完成轨迹重建。
+3. 在没有额外技巧的情况下，DiffusionDrive 显著优于此前最先进方法，在相同主干网络下于 NAVSIM `navtest` 划分上取得了破纪录的 88.1 PDMS，同时保持 NVIDIA 4090 上 45 FPS 的实时性能。
+4. 通过定性结果展示了 DiffusionDrive 能够生成更多样、更合理的轨迹，在多种挑战场景中表现出高质量的多模态驾驶动作生成能力。
 
-## 3 方法
+## 2. 相关工作
+
+### 2.1 端到端自动驾驶
+
+UniAD 作为开创性工作，展示了通过集成多种感知任务提升规划性能的端到端自动驾驶潜力。VAD 进一步探索了紧凑向量化场景表示以提高效率。随后，一系列工作采用单轨迹规划范式继续提升规划性能。最近，VADv2 将范式转向多模态规划：它通过对大型固定 anchor 轨迹词表进行打分和采样来生成规划结果。Hydra-MDP 通过引入来自基于规则评分器的额外监督，进一步改进了 VADv2 的打分机制。SparseDrive 则探索了一种无 BEV 的替代方案。与现有多模态规划方法不同，本文提出了一种新的范式，利用强大的生成式扩散模型来解决端到端自动驾驶问题。
+
+### 2.2 用于交通仿真的扩散模型
+
+驾驶扩散策略已经在交通仿真中被探索，但通常仅依赖抽象感知真值。MotionDiffuser 和 CTG 是将扩散模型应用于多智能体运动预测的先驱工作，使用条件扩散模型从高斯噪声中采样目标轨迹。CTG++ 进一步引入大语言模型进行语言驱动引导，从而提升可用性并支持更真实的交通仿真。Diffusion-ES 则用进化搜索替代了奖励梯度引导的去噪过程。与这些仅限于在拥有感知真值的交通仿真中使用扩散模型的方法不同，本文的方法通过所提出的截断扩散策略和高效扩散解码器，释放了扩散模型在实时端到端自动驾驶中的潜力。
+
+### 2.3 用于机器人策略学习的扩散模型
+
+Diffusion Policy 展示了扩散模型在机器人策略学习中的巨大潜力，能够有效捕捉多模态动作分布和高维动作空间。Diffuser 提出了一种用于轨迹采样的无条件扩散模型，并结合 classifier-free guidance 和图像修补等技术实现引导采样。随后，大量工作将扩散模型应用到不同机器人任务中，包括静态操作、移动操作、自主导航、四足运动和灵巧操作等。
+
+然而，将原始扩散策略直接用于端到端自动驾驶会带来独特挑战，因为自动驾驶要求实时高效，并且要在动态、开放世界的交通场景中生成合理的多模态轨迹。本文提出了一种新的截断扩散策略来解决这些挑战，并引入了一些机器人领域尚未探索过的概念。
+
+### 2.4 用于图像生成的扩散模型
+
+扩散模型已被广泛用于图像生成任务。DDIM 在 DDPM 的基础上，通过非马尔可夫扩散过程实现了显著更少步数的高效采样。Flow Matching 通过直接建模连续概率流进一步优化了生成过程。TDPM 提出截断去噪，从一个隐式的中间分布启动生成过程，以加速采样。与这些方法不同，本文的方法在扩散策略中引入了显式驾驶先验，从而更准确、更高效地引导生成过程，使其特别适用于端到端自动驾驶。
+
+## 3. 方法
 
 ### 3.1 预备知识
 
-vanilla diffusion policy 从标准高斯噪声开始，逐步去噪得到动作。训练时通过前向扩散给真实动作加噪，模型学习预测去噪后的动作；推理时从随机噪声出发，经过多步 DDIM/DDPM 反向过程得到动作。
+#### 任务形式化
 
-在自动驾驶中，动作是未来轨迹。DiffusionDrive 认为直接从随机高斯噪声生成轨迹不符合驾驶先验，也导致多样性差和计算成本高。
+端到端自动驾驶以原始传感器数据为输入，并预测自车的未来轨迹。轨迹表示为 waypoint 序列：
 
-### 3.2 直接迁移扩散策略的问题
+`τ = {(x_t, y_t)}_{t=1}^{T_f}`
 
-作者构建 TransfuserDP，将 Transfuser 的确定性 MLP head 替换为条件扩散模型。它比 Transfuser 提升 0.6 PDMS，但代价是去噪 20 步，总规划模块时间达到 130 ms，FPS 降到 7。此外，定性结果显示不同噪声生成的轨迹高度重叠，说明 vanilla diffusion 没有产生真正多样化行为。
+其中，`T_f` 表示规划时间范围，`(x_t, y_t)` 表示当前自车坐标系下时刻 `t` 对应 waypoint 的位置。
+
+#### 条件扩散模型
+
+条件扩散模型的前向扩散过程可看作逐渐向数据样本中加入噪声，其定义为：
+
+`q(τ^i | τ^0) = N(τ^i ; sqrt(alpha_bar_i) * τ^0, (1 - alpha_bar_i) I)`  (1)
+
+其中，`τ^0` 是干净数据样本，`τ^i` 是在第 `i` 个时刻带噪的数据样本。文中使用上标 `i` 表示扩散时间步。常数 `alpha_bar_i = \prod_{s=1}^{i} alpha_s = \prod_{s=1}^{i}(1 - beta_s)`，其中 `beta_s` 是噪声日程。作者训练反向过程模型 `f_θ(τ^i, z, i)`，在条件信息 `z` 的引导下，从 `τ^i` 预测 `τ^0`，其中 `θ` 是可训练模型参数。
+
+在推理过程中，训练好的扩散模型 `f_θ` 会在条件信息 `z` 的引导下，从高斯分布中采样的随机噪声 `τ^T` 逐步细化，最终得到预测的干净样本 `τ^0`，其形式为：
+
+`p_θ(τ^0 | z) = ∫ p(τ^T) ∏_{i=1}^{T} p_θ(τ^{i-1} | τ^i, z) dτ^{1:T}`  (2)
+
+### 3.2 研究动机
+
+#### 将 Transfuser 改造成条件扩散模型
+
+作者从具有代表性的确定性端到端规划器 Transfuser 出发，将其改造成生成式模型 TransfuserDP。具体做法很简单，即按照原始 Diffusion Policy 的方式，用条件扩散模型 UNet 替换 Transfuser 中用于回归轨迹的 MLP 层。在评估阶段，模型从一个随机噪声开始，并用 20 个步骤逐步细化。表 2 表明，TransfuserDP 的规划质量优于确定性的 Transfuser。
+
+#### 模式坍缩
+
+为了进一步研究原始扩散策略在驾驶任务中的多模态性质，作者从高斯分布中采样 20 个随机噪声，并分别用 20 步进行去噪。如图 2 所示，不同随机噪声在去噪后收敛到了非常相似的轨迹。
+
+为了定量分析这种模式坍缩现象，作者定义了一个 mode diversity score `D`，它基于每条去噪轨迹与所有去噪轨迹并集之间的平均交并比（mIoU）：
+
+`D = 1 - (1/N) * Σ_i Area(τ_i ∩ ∪_j τ_j) / Area(τ_i ∪ ∪_j τ_j)`  (3)
+
+其中，`τ_i` 表示第 `i` 条去噪轨迹，`N` 是采样轨迹总数，`∪_j τ_j` 表示所有去噪轨迹的并集。mIoU 越大，说明不同去噪轨迹之间越相似，也就意味着多样性越差。表 2 中给出的定量模式多样性结果进一步验证了图 2 中的观察。
+
+#### 去噪开销沉重
+
+DDIM 扩散策略需要 20 个去噪步骤才能把随机噪声转化为可行轨迹，这带来了显著的计算负担。如表 2 所示，这会使 FPS 从 60 降低到 7，因此不适用于实时在线驾驶应用。
 
 ### 3.3 截断扩散
 
-DiffusionDrive 的核心是 anchored Gaussian distribution。给定一组先验 anchor 轨迹，模型不从标准高斯噪声开始，而是在每个 anchor 附近加入少量高斯噪声，形成多个 anchor-centered 子分布。训练和推理都从这些更接近合理驾驶行为的初始点开始。
+人类驾驶遵循相对固定的模式，这与原始扩散策略从随机噪声开始去噪的方式不同。受这一点启发，作者提出了一种截断扩散策略：它不是从标准高斯分布出发，而是从 anchored Gaussian distribution 开始去噪。为了让模型学会从 anchored Gaussian distribution 去噪到目标驾驶策略，作者在训练期间进一步截断扩散日程，仅向 anchor 加入少量高斯噪声。
 
-这种做法有两个好处：
+#### 训练阶段
 
-1. 多个 anchor 对应不同驾驶意图，天然提升多模态覆盖；
-2. 初始状态接近真实轨迹分布，因此可以截断扩散 schedule，大幅减少去噪步数。
+首先，作者在训练集上通过 K-Means 聚类得到 `N_anchor` 个 anchor 轨迹 `{a_k}`，其中：
 
-DiffusionDrive 训练时用 20 个聚类 anchor，并将扩散 schedule 截断到 50/1000；推理时只用 2 个去噪步骤。
+`a_k = {(x_t, y_t)}_{t=1}^{T_f}`
+
+然后，对这些 anchor 加入高斯噪声来构建扩散过程，并将噪声日程截断，使其扩散到 anchored Gaussian distribution：
+
+`τ_k^i = sqrt(alpha_bar_i) * a_k + sqrt(1 - alpha_bar_i) * ε,   ε ~ N(0, I)`  (4)
+
+其中，`i ∈ [1, T_trunc]`，并且 `T_trunc << T`，表示截断后的扩散步数远小于完整扩散步数。
+
+在训练中，扩散解码器 `f_θ` 以 `N_anchor` 条带噪轨迹 `{τ_k^i}` 为输入，并预测分类分数 `{ŝ_k}` 与去噪后的轨迹 `{τ̂_k}`：
+
+`{ŝ_k, τ̂_k}_{k=1}^{N_anchor} = f_θ({τ_k^i}_{k=1}^{N_anchor}, z)`  (5)
+
+这里，`z` 表示条件信息。作者将最接近真实轨迹 `τ_gt` 的那个 anchor 周围的带噪轨迹视为正样本（`y_k = 1`），其余视为负样本（`y_k = 0`）。训练目标由轨迹重建与分类两部分组成：
+
+`L = Σ_{k=1}^{N_anchor} [ y_k * L_rec(τ̂_k, τ_gt) + λ * BCE(ŝ_k, y_k) ]`  (6)
+
+其中，`λ` 用于平衡简单的 L1 重建损失 `L_rec` 和二元交叉熵分类损失 `BCE`。
+
+#### 推理阶段
+
+推理时，作者采用截断后的去噪过程：从 anchored Gaussian distribution 中采样带噪轨迹，然后逐步去噪为最终预测结果。在每一个去噪时间步，前一步估计的轨迹会被送入扩散解码器 `f_θ`，由其预测分类分数 `{ŝ_k}` 和轨迹坐标 `{τ̂_k}`。在得到当前时间步的预测后，作者使用 DDIM 的更新规则来采样下一时间步的轨迹。
+
+#### 推理灵活性
+
+该方法的一项关键优势在于推理灵活性。虽然模型训练时使用的是固定数量的 `N_anchor` 条轨迹，但推理阶段可以容纳任意数量的轨迹样本 `N_infer`。`N_infer` 可以根据计算资源或应用需求动态调整。
 
 ### 3.4 架构
 
-DiffusionDrive 可接入已有端到端规划器的感知模块，并支持不同传感器输入。论文实验中沿用 Transfuser 的 ResNet-34 backbone 与感知设置。
+图 4 展示了 DiffusionDrive 的整体架构。DiffusionDrive 能够集成此前端到端规划器中使用的多种现有感知模块，并支持不同类型的传感器输入。作者设计的扩散解码器是专门为复杂且富挑战性的驾驶应用量身定制的，能够更充分地与条件场景上下文交互。
 
-扩散 decoder 接收从 anchored Gaussian distribution 采样的 noisy trajectories。它先基于轨迹坐标与 BEV 或 PV 特征做 deformable spatial cross-attention，然后与感知模块输出的 agent/map queries 做 cross-attention，再经过 FFN 和 timestep modulation。每个 decoder layer 预测置信度和相对初始 noisy trajectory 的 offset。
+#### 扩散解码器
 
-作者还引入 cascade diffusion decoder：在每个去噪步骤内部堆叠多个 decoder layer，逐步细化轨迹重构。推理时选择置信度最高的轨迹作为输出。
+给定从 anchored Gaussian distribution 中采样得到的带噪轨迹集合 `{τ̂_k}_{k=1}^{N_infer}`，作者首先应用 deformable spatial cross-attention，根据轨迹坐标与 BEV 或 PV 特征进行交互。随后，在轨迹特征与感知模块输出的 agent/map queries 之间执行 cross-attention，并接一个前馈网络（FFN）。
 
-### 3.5 训练与推理
+为了编码扩散时间步信息，作者使用了一个 Timestep Modulation 层，之后接一个多层感知机（MLP），用于预测置信度分数以及相对于初始带噪轨迹坐标的偏移量。该扩散解码器层的输出会作为下一个级联扩散解码器层的输入。DiffusionDrive 进一步复用该级联扩散解码器，在推理过程中对轨迹进行迭代去噪，并在不同去噪时间步之间共享参数。最终，置信度最高的轨迹被选作输出结果。
 
-训练目标由轨迹重构损失和二分类置信度损失组成。每个 anchor 依据是否接近专家轨迹被标为正/负样本。正样本参与 L1 reconstruction loss，所有样本参与 BCE classification loss。
-
-推理时，模型可灵活设定采样轨迹数量 `N_infer`。尽管训练使用固定数量 anchors，推理可以根据算力和应用需求调整候选轨迹数。
-
-## 4 实验
+## 4. 实验
 
 ### 4.1 数据集
 
-主要评估在 NA VSIM navtest 上进行。NA VSIM 基于 OpenScene/nuPlan，面向真实世界规划场景，包含 8 个相机的 360 度视野和 5 个 LiDAR 合并点云。指标为 PDMS，由 NC、DAC、TTC、comfort 和 ego progress 组成。
+#### NAVSIM
 
-论文还在 nuScenes 上做开环评估，使用 L2 error、collision rate 和 FPS。
+NAVSIM 是一个面向真实世界规划的数据集，建立在 OpenScene 之上，而 OpenScene 是对 nuPlan 的紧凑重发布；nuPlan 是目前公开可用的最大标注驾驶数据集之一。NAVSIM 使用 8 个相机实现完整的 360 度视场，并融合来自 5 个 LiDAR 传感器的点云。标注频率为 2Hz，包含高清地图和目标边界框。
+
+该数据集的设计重点在于具有驾驶意图动态变化的挑战场景，同时有意排除了诸如静止场景或匀速行驶等简单情形。
+
+NAVSIM 通过非反应式仿真和闭环指标对规划性能进行综合评估。本文采用其提出的 PDM score（PDMS）作为评估指标，它由多个子指标加权组成，包括无责任碰撞（NC）、可行驶区域合规性（DAC）、碰撞时间（TTC）、舒适性（Comf.）和自车推进进度（EP）。
 
 ### 4.2 实现细节
 
-为了公平比较，作者采用与 Transfuser 相同的感知模块和 ResNet-34 backbone。输入为三个裁剪缩放后的前向相机图像，拼接为 1024 x 256 图像，以及栅格化 BEV LiDAR 表示。模型在 navtrain 上从零训练 100 epoch，使用 AdamW，总 batch size 512，在 8 张 NVIDIA 4090 上训练。输出是 4 秒 8 waypoint 轨迹。
+为了公平比较，作者采用了与 Transfuser 相同的感知模块和 ResNet-34 主干网络。在扩散解码器层中，作者遵循 Transfuser 的 BEV 设置，仅与 BEV 特征进行 spatial cross-attention。由于 Transfuser 的感知模块并不包含向量化地图构建，作者仅执行 agent cross-attention。
 
-### 4.3 NA VSIM 主要结果
+模型堆叠了 2 层级联扩散解码器，并采用含 20 个聚类 anchor 的截断扩散策略。训练时，扩散日程被截断为 `50/1000`，即只对 anchor 加入一小部分扩散噪声；而在推理时，仅使用 2 个去噪步骤，并选取得分最高的轨迹用于评估。
 
-DiffusionDrive 在 NA VSIM navtest 上达到 88.1 PDMS。相比 Transfuser 的 84.0，提升 4.1；相比 VADv2-V8192 的 80.9，提升 7.2，同时 anchor 数量从 8192 降到 20；相比 Hydra-MDP-V8192-W-EP 的 86.5，也提升 1.6。
+训练与推理流程完全遵循 Transfuser：输入包括 3 张裁剪并下采样后的前向相机图像，将其拼接为一张 `1024×256` 的图像，以及一张栅格化的 BEV LiDAR 表示。DiffusionDrive 在 `navtrain` 划分上从头训练 100 个 epoch，使用 AdamW 优化器，在 8 张 NVIDIA 4090 GPU 上以总 batch size 512 训练，学习率设为 `6 × 10^-4`。测试时不使用任何 test-time augmentation。最终在 `navtest` 上用于评估的输出是未来 4 秒、共 8 个 waypoint 的轨迹。
 
-| 方法 | 输入 | Backbone | Anchor | NC | DAC | TTC | Comf. | EP | PDMS |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+### 4.3 定量比较
+
+表 1 比较了 DiffusionDrive 与最先进方法在 NAVSIM `navtest` 上的表现。在相同 ResNet-34 主干网络下，DiffusionDrive 取得了 88.1 的 PDMS，显著优于此前的学习式方法。与 VADv2 相比，DiffusionDrive 在 anchor 数量从 8192 降到 20 的同时，PDMS 提升了 7.2，相当于将 anchor 数量减少了 400 倍。DiffusionDrive 也优于同样采用“从词表采样”范式的 Hydra-MDP，PDMS 提升 5.1。
+
+即使与 Hydra-MDP-V8192-W-EP 相比，后者是在 Hydra-MDP 基础上进一步用额外监督来拟合 EP 指标并采用加权置信度后处理的变体，DiffusionDrive 仍然在不依赖任何后处理、仅通过直接模仿人类示范学习的情况下，在 EP 上高出 3.5、总体 PDMS 上高出 1.6。与 Transfuser 基线相比，在唯一差异仅为规划模块的前提下，DiffusionDrive 的 PDMS 提升达到 4.1，并且在所有子分数上都更优。
+
+#### 表 1：NAVSIM `navtest` 闭环指标比较
+
+| 方法 | 输入 | 主干网络 | Anchor 数 | NC | DAC | TTC | Comf. | EP | PDMS |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | UniAD | Camera | ResNet-34 | 0 | 97.8 | 91.9 | 92.9 | 100 | 78.8 | 83.4 |
+| PARA-Drive | Camera | ResNet-34 | 0 | 97.9 | 92.4 | 93.0 | 99.8 | 79.3 | 84.0 |
+| LTF | Camera | ResNet-34 | 0 | 97.4 | 92.8 | 92.4 | 100 | 79.0 | 83.8 |
 | Transfuser | C&L | ResNet-34 | 0 | 97.7 | 92.8 | 92.8 | 100 | 79.2 | 84.0 |
+| DRAMA | C&L | ResNet-34 | 0 | 98.0 | 93.1 | 94.8 | 100 | 80.1 | 85.5 |
+| VADv2-V8192 | C&L | ResNet-34 | 8192 | 97.2 | 89.1 | 91.6 | 100 | 76.0 | 80.9 |
+| Hydra-MDP-V8192 | C&L | ResNet-34 | 8192 | 97.9 | 91.7 | 92.9 | 100 | 77.6 | 83.0 |
 | Hydra-MDP-V8192-W-EP | C&L | ResNet-34 | 8192 | 98.3 | 96.0 | 94.6 | 100 | 78.7 | 86.5 |
 | DiffusionDrive | C&L | ResNet-34 | 20 | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 |
 
-### 4.4 从 Transfuser 到 DiffusionDrive 的路线图
+表注：“C&L” 表示同时使用相机和 LiDAR 作为传感器输入；“V8192” 表示使用 8192 个 anchor；Hydra-MDP-V8192-W-EP 是 Hydra-MDP 的一个变体，它进一步训练以拟合 EP 评估指标，并使用来自规则评估器的额外监督以及加权置信度后处理。DiffusionDrive 仅从人类示范中学习，推理时不使用后处理。
 
-| 方法 | PDMS | 去噪步数 | 规划模块总时间 | 参数 | FPS |
-|---|---:|---:|---:|---:|---:|
-| Transfuser | 84.0 | 1 | 0.2 ms | 56M | 60 |
-| TransfuserDP | 84.6 | 20 | 130.0 ms | 101M | 7 |
-| TransfuserTD | 85.7 | 2 | 13.8 ms | 102M | 27 |
-| DiffusionDrive | 88.1 | 2 | 7.6 ms | 60M | 45 |
+### 4.4 路线图分析
 
-这张表说明：vanilla diffusion 有性能收益但开销过高；截断扩散显著减少步数；专门设计的 diffusion decoder 进一步提升性能并降低开销。
+表 2 展示了从 Transfuser 演化到 DiffusionDrive 的路线图。将 Transfuser 转化为采用原始扩散策略的生成式模型 TransfuserDP 后，PDMS 提升了 0.6，模式多样性分数 `D` 提升了 11%。然而，这也极大增加了规划模块的计算开销：去噪步数增加了 20 倍，单步时间增加了 32 倍，导致总运行开销增加约 650 倍。
+
+使用所提出的截断扩散策略后，TransfuserTD 将去噪步数从 20 降到 2，同时 PDMS 进一步提升 1.1，模式多样性提升 59%。在此基础上再引入本文设计的扩散解码器，最终模型 DiffusionDrive 达到 88.1 PDMS 和 74% 的模式多样性分数 `D`。与 TransfuserDP 相比，DiffusionDrive 的 PDMS 提升 3.5，模式多样性提升 64%，去噪步数减少 10 倍，FPS 提高约 6 倍，从而实现了实时、高质量、多模态规划。
+
+#### 表 2：从 Transfuser 到 DiffusionDrive 的路线图
+
+| 方法 | NC | DAC | TTC | Comf. | EP | PDMS | 架构 | 单步时间 | 步数 | 总时间 | D | 参数量 | FPS |
+|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|
+| Transfuser | 97.7 | 92.8 | 92.8 | 100 | 79.2 | 84.0 | MLP | 0.2ms | 1 | 0.2ms | 0% | 56M | 60 |
+| TransfuserDP | 97.5 | 93.7 | 92.7 | 100 | 79.4 | 84.6 | UNet | 6.5ms | 20 | 130.0ms | 11% | 101M | 7 |
+| TransfuserTD | 97.9 | 94.2 | 93.9 | 100 | 80.2 | 85.7 | UNet | 6.9ms | 2 | 13.8ms | 70% | 102M | 27 |
+| DiffusionDrive | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 | Decoder | 3.8ms | 2 | 7.6ms | 74% | 60M | 45 |
+
+表注：TransfuserDP 表示采用原始 DDIM 扩散策略的 Transfuser；TransfuserTD 表示采用截断扩散策略的 Transfuser；FPS 和运行时间在 NVIDIA 4090 上测得；`D` 为公式（3）定义的模式多样性分数。
 
 ### 4.5 消融实验
 
-消融显示，spatial cross-attention、agent/map cross-attention 和 cascade decoder 都有贡献。完整模型达到 88.1 PDMS。去噪步数方面，1 步为 87.9，2 步为 88.1，3 步仍为 88.1，说明 2 步已足够。cascade stages 从 1 到 2 提升明显，4 stages 只有微小增益但参数更多。候选噪声数 `N_infer` 从 10 到 20 有明显提升，40 只带来极小收益。
+#### 扩散解码器设计的作用
 
-### 4.6 nuScenes 开环结果
+表 3 展示了扩散解码器中各设计选择的有效性。ID-1 即表 2 中的 TransfuserTD。对比 ID-6 与 ID-1 可以看到，所提出的扩散解码器在参数量减少 39% 的同时，将规划质量提升了 2.4 PDMS。ID-2 表明，如果缺少与环境之间丰富且分层的交互，性能会严重退化。对比 ID-2 与 ID-3 说明 spatial cross-attention 对准确规划至关重要。ID-5 则显示，所提出的级联机制是有效的，能够进一步提升性能。
 
-在 nuScenes 上，DiffusionDrive 使用 ResNet-50 camera-only 设置达到 Avg L2 0.57、Avg collision 0.08、FPS 8.2。相比 VAD 的 Avg L2 0.72、collision 0.22，误差降低 20.8%，碰撞率降低 63.6%。
+#### 去噪步数
 
-## 5 结论
+表 4 显示，由于截断扩散提供了合理的起始点，DiffusionDrive 即使只用 1 步也能达到不错的规划质量，而增加去噪步数则能进一步提升复杂环境下的质量和推理灵活性。
 
-DiffusionDrive 将扩散模型引入端到端自动驾驶，并提出截断扩散策略解决 vanilla diffusion 在交通场景中的高延迟和模式坍缩问题。通过 anchored Gaussian distribution 和级联扩散 decoder，它能在 2 步去噪内生成多样且高质量的轨迹。在 NA VSIM 上达到 88.1 PDMS，并以 45 FPS 实时运行。
+#### 级联阶段数
+
+表 5 研究了级联阶段数的影响。增加阶段数能够提升规划质量，但在 4 个阶段时已基本饱和，同时每一步的参数量和推理耗时也会增加。
+
+#### 采样噪声数量 `N_infer`
+
+如第 3.3 节所述，DiffusionDrive 只需从 anchored Gaussian distribution 中采样不同数量的噪声，就可以生成不同数量的轨迹。表 6 显示，仅采样 10 个噪声就已经能取得不错的规划质量；采样更多噪声后，DiffusionDrive 能覆盖更广的潜在规划动作空间，从而带来更好的规划性能。
+
+#### 表 3：扩散解码器设计消融
+
+| ID | UNet Decoder | Ego Query Interaction | Spatial Cross-attn | Agent/Map Cross-attn | Cascade Decoder | 参数量 | NC | DAC | TTC | Comf. | EP | PDMS |
+|---|---|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 1 | ✓ | ✓ | ✗ | ✗ | ✗ | 102M | 97.9 | 94.2 | 93.9 | 100 | 80.2 | 85.7 |
+| 2 | ✗ | ✓ | ✗ | ✗ | ✗ | 57M | 88.7 | 83.2 | 80.0 | 84.8 | 43.3 | 55.1 |
+| 3 | ✗ | ✓ | ✓ | ✗ | ✗ | 58M | 98.2 | 95.4 | 94.4 | 100 | 81.3 | 87.1 |
+| 4 | ✗ | ✓ | ✗ | ✓ | ✗ | 58M | 97.9 | 93.5 | 93.8 | 100 | 79.8 | 85.1 |
+| 5 | ✗ | ✓ | ✓ | ✓ | ✗ | 59M | 98.0 | 95.8 | 94.4 | 100 | 81.7 | 87.4 |
+| 6 | ✗ | ✓ | ✓ | ✓ | ✓ | 60M | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 |
+
+表注：“Cascade Decoder” 表示堆叠 2 层级联扩散解码器。ID-1 对应表 2 中的 TransfuserTD，它采用条件 UNet，并与 ego-query 交互，而 Transfuser 原本就是利用该 ego-query 来直接回归单模态轨迹。
+
+#### 表 4：去噪步数消融
+
+| 步数 | 参数量 | NC | DAC | TTC | Comf. | EP | PDMS |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 60M | 98.3 | 96.0 | 94.7 | 100 | 82.1 | 87.9 |
+| 2 | 60M | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 |
+| 3 | 60M | 98.2 | 96.3 | 94.7 | 100 | 82.2 | 88.1 |
+
+#### 表 5：级联阶段数消融
+
+| 阶段数 | 参数量 | NC | DAC | TTC | Comf. | EP | PDMS |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 59M | 98.0 | 95.8 | 94.4 | 100 | 81.7 | 87.4 |
+| 2 | 60M | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 |
+| 4 | 65M | 98.4 | 96.2 | 94.9 | 100 | 82.4 | 88.2 |
+
+#### 表 6：采样噪声数 `N_infer` 消融
+
+| `N_infer` | 参数量 | NC | DAC | TTC | Comf. | EP | PDMS |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 60M | 97.9 | 93.5 | 93.1 | 100 | 80.0 | 84.9 |
+| 20 | 60M | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 |
+| 40 | 60M | 98.5 | 96.2 | 94.8 | 100 | 82.5 | 88.2 |
+
+### 4.6 定性比较
+
+由于 PDMS 只根据 top-1 得分轨迹进行计算，而作者提出的 `D` 分数只评估模式多样性，因此仅靠这些指标无法完整刻画多模态轨迹的质量。为进一步验证多模态轨迹的质量，作者在 NAVSIM `navtest` 的挑战场景上可视化了 Transfuser、TransfuserDP 和 DiffusionDrive 的规划结果，如图 2 所示。
+
+结果表明，DiffusionDrive 生成的多模态轨迹不仅具有多样性，而且质量很高。在图 2(a) 中，DiffusionDrive 生成的 top-1 轨迹与真实轨迹高度相似，而其高亮显示的 top-10 轨迹还尝试进行了高质量换道。在图 2(b) 中，高亮的 top-10 轨迹同样执行了换道，邻近的低分轨迹还能进一步与周围车辆交互，从而有效避免碰撞。
+
+### 4.7 在 nuScenes 数据集上的定量比较
+
+nuScenes 是此前广泛使用的端到端规划基准。由于 nuScenes 中大多数场景相对简单，因此作者只在表 7 中给出了比较结果。作者在 SparseDrive 之上实现了 DiffusionDrive，并遵循其训练和推理流程，使用 ST-P3 提出的开环评估指标。模型堆叠 2 层级联扩散解码器，并使用 18 个聚类 anchor 的截断扩散策略。
+
+如表 7 所示，DiffusionDrive 将 SparseDrive 的平均 L2 误差进一步降低了 0.04 米，达到了最低的 L2 误差和平均碰撞率。同时，DiffusionDrive 也具有较高效率，相比 VAD 速度快 1.8 倍，L2 误差降低 20.8%，碰撞率降低 63.6%。
+
+#### 表 7：nuScenes 开环指标比较
+
+| 方法 | 输入 | 主干网络 | 1s L2 | 2s L2 | 3s L2 | Avg. L2 | 1s 碰撞率 | 2s 碰撞率 | 3s 碰撞率 | Avg. 碰撞率 | FPS |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| ST-P3 | Camera | EffNet-b4 | 1.33 | 2.11 | 2.90 | 2.11 | 0.23 | 0.62 | 1.27 | 0.71 | 1.6 |
+| UniAD | Camera | ResNet-101 | 0.45 | 0.70 | 1.04 | 0.73 | 0.62 | 0.58 | 0.63 | 0.61 | 1.8 |
+| OccNet | Camera | ResNet-50 | 1.29 | 2.13 | 2.99 | 2.14 | 0.21 | 0.59 | 1.37 | 0.72 | 2.6 |
+| VAD | Camera | ResNet-50 | 0.41 | 0.70 | 1.05 | 0.72 | 0.07 | 0.17 | 0.41 | 0.22 | 4.5 |
+| SparseDrive | Camera | ResNet-50 | 0.29 | 0.58 | 0.96 | 0.61 | 0.01 | 0.05 | 0.18 | 0.08 | 9.0 |
+| DiffusionDrive | Camera | ResNet-50 | 0.27 | 0.54 | 0.90 | 0.57 | 0.03 | 0.05 | 0.16 | 0.08 | 8.2 |
+
+## 5. 结论
+
+本文提出了一种新的生成式驾驶决策模型 DiffusionDrive，用于端到端自动驾驶。该模型结合了所提出的截断扩散策略与高效的级联扩散解码器。DiffusionDrive 能够从 anchored Gaussian distribution 中对可变数量的样本进行去噪，从而以实时速度生成多样化的规划轨迹。大量实验与定性比较验证了 DiffusionDrive 在规划质量、运行效率和模式多样性方面的优越性。
+
+## 致谢
+
+作者感谢 Tianheng Cheng 对论文草稿提出的有益反馈。
+
+## 图注翻译
+
+### 图 1
+
+不同端到端范式的比较。  
+(a) 单模态回归。  
+(b) 从词表中采样。  
+(c) 原始扩散策略。  
+(d) 本文提出的截断扩散策略。
+
+### 图 2
+
+在 NAVSIM `navtest` 挑战场景上，Transfuser、TransfuserDP 与 DiffusionDrive 的定性比较。使用相同的前向相机和 LiDAR 输入时，DiffusionDrive 如表 2 所示取得了最高的 top-1 轨迹规划质量。作者在前视图中渲染了 DiffusionDrive 预测出的高亮多样轨迹。  
+(a) top-1 轨迹为直行，而 top-10 中的多样轨迹执行换道。  
+(b) top-1 轨迹为左转，而 top-10 中的多样轨迹执行换道。  
+这说明 DiffusionDrive 的 top-1 轨迹在直行与左转场景中都与真实轨迹高度接近；同时，其 top-10 轨迹还能表现出高质量换道行为，而这在多模态的 TransfuserDP 中没有观察到，在单模态 Transfuser 中更是不可能实现。
+
+### 图 3
+
+通过与原始扩散策略对比，说明截断扩散策略。作者对扩散过程进行截断，仅加入少量高斯噪声来扩散 anchor 轨迹。随后，训练扩散模型在条件场景上下文下，从 anchored Gaussian distribution 中重建真实轨迹。推理时，也同样通过从 anchored Gaussian distribution 中更优的初始样本出发，而不是从纯高斯噪声出发，来截断去噪过程。
+
+### 图 4
+
+DiffusionDrive 的整体架构。  
+(a) DiffusionDrive 可以集成多种现有感知模块和传感器输入。  
+(b) 设计的扩散解码器以 anchored Gaussian distribution 中采样得到的带噪轨迹作为输入，并通过与条件场景上下文增强交互的级联方式逐步去噪，从而生成最终预测结果。
+
+## 补充材料翻译
+
+### A. 更多实现细节
+
+作者在 NAVSIM 和 nuScenes 数据集上补充了更多实现细节。
+
+#### NAVSIM 数据集
+
+作者使用 ImageNet 预训练权重初始化 ResNet-34 主干网络。LiDAR 感知范围按照 Transfuser 基线设置，为前、后、左、右各 32 米。作者还遵循 Transfuser 基线执行辅助感知任务，包括 3D 目标检测和 2D BEV 语义分割。目标 queries 和 BEV 特征被作为所提出扩散解码器的输入。
+
+#### nuScenes 数据集
+
+作者遵循 SparseDrive 基线进行两阶段训练。模型直接用其 stage-1 预训练权重初始化，该权重仅在感知任务上训练，包括 3D 目标检测/跟踪、向量化高清地图构建和运动预测，并由官方开源实现提供。作者在 nuScenes 数据集上训练 stage-2 模型共 10 个 epoch，用本文提出的扩散解码器和截断扩散机制替换 SparseDrive 的规划模块。目标 queries、地图 queries 和 PV 特征被作为扩散解码器的输入。
+
+### B. 更多消融实验
+
+#### 驾驶先验的比较
+
+表 8 验证了先验 anchor 相比基于当前状态外推出的先验轨迹更具优势。表中第 1 行是正文中的 DiffusionDrive 基线。第 2 行表示使用基线模型，但在推理时不是从采样得到的 `N_infer` 轨迹出发，而是从一条外推轨迹出发。第 3 行表示用单个 anchor，即基于当前状态外推得到的轨迹，来训练 DiffusionDrive，并在推理时围绕它采样。
+
+结果表明，所提出的 anchored Gaussian distribution 明显优于外推先验。后者无法覆盖潜在动作空间，也无法在真实应用中有效处理困难场景，例如避障和转向。这一点与 NAVSIM 论文表 1 中对基于 ego-status 规划器的对比结论一致。
+
+#### 表 8：驾驶先验比较
+
+| 训练 | 推理 | NC | DAC | TTC | Comf. | EP | PDMS |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Anchored Dist. | Anchored Dist. | 98.2 | 96.2 | 94.7 | 100 | 82.2 | 88.1 |
+| Anchored Dist. | Extra. Traj. | 96.3 | 91.7 | 90.4 | 100 | 76.8 | 81.3 |
+| Extra. Traj. | Extra. Traj. | 97.3 | 94.0 | 92.6 | 100 | 79.6 | 84.7 |
+
+表注：“Anchored Dist.” 表示 anchored Gaussian distribution；“Extra. Traj.” 表示根据当前状态外推出的轨迹。
+
+#### Anchor 来源的泛化性
+
+为了进一步研究 anchor 来源的泛化能力，作者在 CARLA 上训练 DiffusionDrive，但使用的是从 NAVSIM 数据集聚类得到的 anchored Gaussian distribution（表 9 第 2 行）。由于 CARLA 数据集与 NAVSIM 完全不同，这一结果说明作者提出的 anchored Gaussian distribution 具备良好的泛化能力。换言之，它的作用在于覆盖潜在多模态驾驶动作空间，而不是泄露训练集或验证集信息。
+
+#### 表 9：Anchor 来源的泛化能力
+
+| 方法 | Anchor 来源 | DS | RC | IS |
+|---|---|---:|---:|---:|
+| Transfuser | - | 47.30 ± 5.72 | 93.38 ± 1.20 | 0.50 ± 0.06 |
+| DiffusionDrive | NAVSIM | 64.27 ± 2.43 | 94.16 ± 1.46 | 0.69 ± 0.02 |
+
+表注：作者在 CARLA Longest6 基准上，测试了使用 NAVSIM 聚类 anchor 的 DiffusionDrive。带匕首标记的 Transfuser 结果取自 Transfuser 论文。
+
+### C. 更多定性比较
+
+本节作者补充了在面向规划的 NAVSIM `navtest` 挑战场景上的更多定性比较。
+
+#### 直行场景
+
+图 5(a) 和图 5(b) 表明，DiffusionDrive 的 top-1 轨迹与真实轨迹非常接近，而高亮的 top-10 轨迹能够稳健地执行换道。尤其在图 5(c) 中，多样且高亮的 top-10 轨迹还可以进一步识别交通灯，从而实现合理换道并在停止线前停车。
+
+#### 左转场景
+
+图 6 表明，多样化的去噪轨迹会根据交通条件进行动态调整。高亮的 top-10 得分轨迹稳健且合理，能够有效执行换道。
+
+#### 右转场景
+
+图 7(a) 和图 7(b) 表明，DiffusionDrive 的 top-1 轨迹会像真实轨迹一样执行跟车，而高亮的 top-10 轨迹则倾向于超越前车。这些结果验证了 DiffusionDrive 能够稳健地生成多样且合理的驾驶动作。
+
+## 参考文献
+
+本文参考文献共 62 条。由于参考文献主要用于检索与交叉引用，这里不逐条翻译标题，建议直接以原 PDF 末尾文献列表为准。如你需要，我可以继续把 62 条参考文献逐条整理成中文对照版并追加到本文件末尾。
 
 ## 论文解读问答
 
 ### Q1 论文试图解决什么问题？
 
-论文试图解决端到端自动驾驶中多模态轨迹生成与实时性之间的矛盾。单轨迹回归无法表达多种合理驾驶行为；大型 anchor vocabulary 受词表限制且计算重；vanilla diffusion 虽能生成多模态动作，但去噪步数多、容易轨迹重叠，不适合实时驾驶。
+这篇论文试图解决端到端自动驾驶规划中的一个核心矛盾：规划器既要能表达多种合理驾驶意图，又要足够快，能够实时运行。
+
+传统端到端规划器通常直接回归一条单模态轨迹，例如 Transfuser、UniAD、VAD 这类方法。这种方式简单高效，但它把驾驶决策压成一个答案，难以表达真实交通中的多种可能行为，例如直行、换道、绕障、跟车、超车等。VADv2 和 Hydra-MDP 这类 anchor/vocabulary 方法用大量固定候选轨迹来覆盖多模态动作空间，但它们依赖 anchor 数量和质量，面对词表外场景会受限，而且大量 anchor 会带来计算压力。
+
+扩散模型天然适合生成多模态动作，但原始扩散策略直接搬到自动驾驶里会遇到两个问题：一是去噪步数多，推理慢；二是不同噪声最后可能收敛到相似轨迹，出现模式坍缩。因此，论文真正要解决的是：如何让扩散模型在端到端自动驾驶中既保留多模态生成能力，又满足实时规划需求。
 
 ### Q2 这是否是一个新的问题？
 
-不是全新问题。多模态规划、动作不确定性和实时推理一直存在。但将扩散策略系统地迁移到端到端自动驾驶，并针对交通场景提出截断扩散和 anchored Gaussian distribution，是本文的新问题表述和解决方向。
+问题本身不是全新的。自动驾驶规划中的不确定性、多模态决策、实时性约束，以及固定 anchor 方案的覆盖不足，都是领域内长期存在的问题。
+
+但论文的新意在于问题的具体表述和解决位置：作者不是单纯问“怎样做多模态规划”，而是问“为什么机器人领域的 vanilla diffusion policy 直接迁移到端到端自动驾驶后不够好，以及怎样针对交通场景改造它”。论文把原始扩散策略在驾驶场景中的两个失败点，即高去噪开销和模式坍缩，明确作为研究对象，并提出 truncated diffusion policy 来解决。这使得它不是发现了一个全新任务，而是在已有端到端规划问题上提出了一个新的扩散式建模范式。
 
 ### Q3 这篇文章要验证一个什么科学假设？
 
-核心假设是：驾驶动作生成不应从完全随机高斯噪声开始，而应从包含驾驶先验的 anchor-centered 分布开始。这样既能保持扩散模型的多模态表达能力，又能大幅减少去噪步数并提升生成质量。
+论文要验证的核心科学假设是：驾驶动作生成不应该从完全随机的高斯噪声开始，而应该从带有驾驶先验的 anchor-centered 分布开始。
+
+更具体地说，作者假设真实驾驶行为虽然具有多模态性，但并不是任意随机的。人类驾驶员通常会基于若干常见驾驶模式做决策，例如直行、左转、右转、换道、跟车等，再根据实时交通上下文对这些模式进行调整。因此，如果把扩散模型的起点从标准高斯噪声改成围绕先验轨迹 anchor 的 anchored Gaussian distribution，模型就能从更合理的初始状态出发，在少量去噪步骤内生成高质量、多样化的轨迹。
+
+围绕这个假设，论文进一步验证三个子判断：anchor 先验能缓解模式坍缩；截断扩散能显著减少去噪步数；专门设计的 diffusion decoder 能更好地利用场景上下文，从而提升规划质量。
 
 ### Q4 有哪些相关研究？如何归类？谁是这一课题在领域内值得关注的研究员？
 
-相关研究可分为端到端规划、固定 anchor/词表式规划、扩散策略和闭环规划 benchmark。代表方法包括 Transfuser、UniAD、VAD、VADv2、Hydra-MDP、Diffusion Policy、Diffuser、NAVSIM/PDM 系列。
+相关研究可以分成四类。
 
-值得关注的研究员包括 Shuran Song、Sergey Levine、Michael Janner、Yilun Du、Marco Pavone、Andreas Geiger、Kashyap Chitta、Xinggang Wang、Wenyu Liu，以及 DiffusionDrive/VAD 系列作者团队。
+第一类是端到端自动驾驶规划。代表方法包括 Transfuser、UniAD、VAD、PARA-Drive、DRAMA、SparseDrive 等。这类工作关注如何从相机、LiDAR 或 BEV/向量化场景表示中直接输出规划轨迹。早期方法多以单轨迹回归为主，后续逐步加入更强的场景建模和规划约束。
+
+第二类是基于 anchor 或 vocabulary 的多模态规划。代表方法包括 VADv2 和 Hydra-MDP。它们通过大量候选轨迹表示多模态动作空间，再对候选轨迹打分或采样。优势是直观、可控，缺点是性能受 anchor 数量、覆盖质量和计算成本影响。
+
+第三类是扩散模型在决策与机器人策略中的应用。代表工作包括 Diffusion Policy、Diffuser、3D Diffusion Policy、Nomad、LDP 等。这类方法证明扩散模型可以生成多模态动作序列，但许多机器人任务不需要像自动驾驶这样严格的在线实时性，也不一定面对同样复杂开放的交通交互。
+
+第四类是扩散模型在交通仿真和轨迹预测中的应用。代表工作包括 MotionDiffuser、CTG、CTG++、Diffusion-ES 等。这些方法多依赖抽象感知真值或用于仿真/预测，而 DiffusionDrive 的目标是直接在端到端自动驾驶规划器中输出自车驾驶轨迹。
+
+值得关注的研究者和团队包括：Xinggang Wang、Wenyu Liu、Bencheng Liao、Shaoyu Chen、Bo Jiang 等 HUST/VAD/DiffusionDrive 系列作者；Kashyap Chitta、Andreas Geiger 等 Transfuser/NAVSIM 相关研究者；Shuran Song、Cheng Chi、Yilun Du、Sergey Levine 等 Diffusion Policy 与机器人扩散策略方向研究者；Marco Pavone、Boris Ivanovic、Danfei Xu、Davis Rempe 等自动驾驶规划、仿真和轨迹预测方向研究者。
 
 ### Q5 论文中提到的解决方案之关键是什么？
 
-关键是截断扩散策略：用少量先验 anchor 构造 anchored Gaussian distribution，从 anchor 附近开始去噪，而不是从标准高斯噪声开始；再配合专门设计的 cascade diffusion decoder，使模型能以 2 步生成高质量多模态轨迹。
+关键是 truncated diffusion policy，也就是截断扩散策略。它的核心不是简单减少去噪步数，而是先改变扩散模型的起点。
+
+原始扩散策略从标准高斯噪声开始生成动作，这对图像生成或某些机器人任务可行，但对驾驶规划来说初始点太随机。DiffusionDrive 用 K-Means 从训练数据中聚类出少量先验 anchor 轨迹，再在这些 anchor 附近加入少量噪声，形成 anchored Gaussian distribution。训练时，模型学习从这个锚定分布去噪到真实驾驶轨迹；推理时，也从这个更接近合理驾驶行为的分布开始生成。
+
+另一个关键是高效的级联 diffusion decoder。它通过 spatial cross-attention 与 BEV/PV 特征交互，通过 agent/map cross-attention 与感知模块输出的结构化 queries 交互，并在每个去噪步骤内部进行级联细化。最终，模型可以只用 2 个去噪步骤生成多条候选轨迹，并选择置信度最高的轨迹作为输出。
 
 ### Q6 论文中的实验是如何设计的？
 
-实验先在 NA VSIM navtest 上进行闭环指标比较，评估 PDMS 及其子指标；再用路线图实验比较 Transfuser、vanilla diffusion、truncated diffusion 和完整 DiffusionDrive；之后做 decoder 组件、去噪步数、cascade stage、采样数量消融；最后在 nuScenes 上做开环 L2、collision rate 和 FPS 评估。
+论文实验设计基本围绕“从 Transfuser 到 DiffusionDrive”的渐进验证展开。
+
+首先，作者在 NAVSIM `navtest` 上进行主实验，用相同 ResNet-34 backbone 和相同传感器设置，与 UniAD、Transfuser、VADv2、Hydra-MDP、DRAMA 等方法比较 PDMS 及其子指标，包括 NC、DAC、TTC、Comfort、EP。这个实验用于验证整体规划质量。
+
+其次，作者设计了路线图实验：Transfuser 是单轨迹回归基线；TransfuserDP 把 Transfuser 的 MLP 规划头换成 vanilla DDIM diffusion policy；TransfuserTD 进一步引入 truncated diffusion；DiffusionDrive 再加入专门设计的 diffusion decoder。这个实验用于拆分验证扩散建模、截断扩散和新解码器分别带来的影响。
+
+然后，论文做了多个消融实验，包括 diffusion decoder 中 spatial cross-attention、agent/map cross-attention、cascade decoder 的作用；去噪步数从 1 到 3 的影响；级联阶段数从 1、2 到 4 的影响；推理采样数量 `N_infer` 从 10、20 到 40 的影响。补充材料还比较了 anchored Gaussian distribution 与基于当前状态外推轨迹作为先验的差异，并测试了 NAVSIM 聚类 anchor 在 CARLA 上的泛化性。
+
+最后，作者在 nuScenes 上做开环评估，使用 L2 error、collision rate 和 FPS，与 ST-P3、UniAD、OccNet、VAD、SparseDrive 等方法比较，以验证方法在另一个常用数据集上的迁移表现。
 
 ### Q7 用于定量评估的数据集是什么？代码有没有开源？
 
-主要定量评估数据集是 NA VSIM navtest，指标为 PDMS；补充评估使用 nuScenes。代码、模型与 Demo 已开源，论文给出的地址是 <https://github.com/hustvl/DiffusionDrive>。
+主要定量评估数据集是 NAVSIM，尤其是 `navtest` 划分。NAVSIM 是面向规划的真实世界自动驾驶评估基准，基于 OpenScene/nuPlan，使用非反应式仿真和闭环指标进行评估。核心指标是 PDMS，它由无责任碰撞 NC、可行驶区域合规性 DAC、碰撞时间 TTC、舒适性 Comfort、自车推进进度 EP 等子指标组成。
+
+论文还在 nuScenes 上进行了补充的开环定量评估，使用 1s、2s、3s 的 L2 误差、碰撞率和 FPS。
+
+代码、模型和 Demo 已开源。论文中给出的地址是：<https://github.com/hustvl/DiffusionDrive>。
 
 ### Q8 论文中的实验及结果有没有很好地支持需要验证的科学假设？
 
-支持较好。TransfuserDP 说明 vanilla diffusion 虽有增益但开销巨大；TransfuserTD 和 DiffusionDrive 说明截断扩散可以把去噪步数降到 2，并提升 PDMS；消融也显示 2 步已接近饱和。不过该方法仍依赖 anchor 先验，真实闭环部署中的鲁棒性和 OOD 泛化还需要更多验证。
+总体上支持得比较充分。论文不是只给最终结果，而是通过路线图实验和消融实验逐层证明核心假设。
+
+TransfuserDP 的结果说明，直接引入 vanilla diffusion policy 确实能带来一定性能收益，PDMS 从 84.0 到 84.6，但推理开销非常大，FPS 从 60 降到 7，而且模式多样性有限。这支持了作者对 vanilla diffusion 直接迁移问题的判断。
+
+TransfuserTD 的结果说明，使用 truncated diffusion 后，去噪步数从 20 降到 2，FPS 提升到 27，同时 PDMS 提升到 85.7，模式多样性分数明显增加。这直接支持“从 anchored Gaussian distribution 出发可以减少去噪步骤并改善多样性”的假设。
+
+完整 DiffusionDrive 达到 88.1 PDMS、45 FPS、74% 的模式多样性分数，说明高效 diffusion decoder 进一步提升了规划质量与效率。消融实验也显示 spatial cross-attention、agent/map cross-attention 和 cascade decoder 都有贡献。补充材料中，用外推轨迹替代 anchored distribution 会明显退化，也进一步支持“多模态 anchor 先验比单一运动外推先验更有效”。
+
+但也有边界需要注意。NAVSIM 是非反应式仿真闭环评估，并不等价于真实车辆在线闭环部署；nuScenes 开环评估场景相对简单；此外，模型仍依赖训练数据聚类得到的 anchor，极端 OOD 场景下的可靠性还需要更多验证。因此，实验很好地支持了论文内部假设，但还不能完全证明该方法在真实道路部署中已经充分可靠。
 
 ### Q9 这篇论文到底有什么贡献？
 
-贡献是首次系统性地将扩散模型用于端到端自动驾驶规划；提出 anchored Gaussian distribution 与截断扩散策略，解决 vanilla diffusion 的实时性和模式坍缩问题；设计高效 cascade diffusion decoder；在 NA VSIM 和 nuScenes 上取得强结果，并开源代码和模型。
+这篇论文的贡献可以概括为四点。
+
+第一，它把扩散模型系统性地引入端到端自动驾驶规划，并指出 vanilla diffusion policy 直接用于驾驶规划时会出现高延迟和模式坍缩。
+
+第二，它提出 truncated diffusion policy，通过 anchored Gaussian distribution 将驾驶先验注入扩散过程，使模型能从更合理的初始分布出发，用极少去噪步数生成多模态轨迹。
+
+第三，它设计了面向驾驶规划的高效 cascade diffusion decoder，使带噪轨迹能够充分与 BEV/PV 特征、agent/map queries 和扩散时间步信息交互，从而提升轨迹重建质量。
+
+第四，它在 NAVSIM 上取得了强结果：使用 20 个 anchor 达到 88.1 PDMS，并以 45 FPS 实时运行，超过使用 8192 个 anchor 的 VADv2/Hydra-MDP 系列方法；同时在 nuScenes 上也取得了低 L2 误差、低碰撞率和较高 FPS。
+
+### Q10 下一步呢？有什么工作可以继续深入？
+
+后续可以从五个方向继续深入。
+
+第一，做更真实的闭环交互评估。NAVSIM 的非反应式仿真很有价值，但仍然不能完全替代交互式闭环仿真或真实车测试。下一步可以在 nuPlan closed-loop、CARLA 交互仿真、甚至真实车数据回放闭环中验证 DiffusionDrive 的稳定性。
+
+第二，研究 anchor 的自适应生成。当前 anchor 来自训练集 K-Means 聚类，虽然数量少且效果好，但仍是离线固定先验。可以探索根据场景动态生成 anchor，或用语言、地图拓扑、交通规则生成条件化 anchor，使模型更好应对 OOD 场景。
+
+第三，引入显式安全约束和规则约束。DiffusionDrive 主要从人类示范中学习，虽然 PDMS 很高，但对红灯、让行、限速、道路边界、行人交互等安全约束可以进一步显式建模。后续可结合可微规则损失、轨迹可行性检查、控制约束或强化学习后训练。
+
+第四，提升多模态轨迹的评估方式。论文提出了模式多样性分数 `D`，但多样性不等于可用性。下一步可以设计更细的指标来评估 top-k 轨迹是否同时具备多样性、可行性、安全性和可解释性，而不只是看 top-1 PDMS。
+
+第五，扩展到更统一的世界模型或端到端系统。DiffusionDrive 当前主要改进规划头，感知模块仍依赖已有架构。后续可以研究感知、预测、地图、规划之间更紧密的联合训练，或把扩散规划与 occupancy、agent prediction、map uncertainty、VLM 指令理解等模块结合起来。
+
+我个人觉得最值得继续做的是“动态 anchor + 显式安全约束”。前者能解决固定先验覆盖不足的问题，后者能把生成式模型的自由度收回到自动驾驶真正关心的安全边界内。两者结合起来，可能会比单纯堆更大的扩散解码器更有研究价值。

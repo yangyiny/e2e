@@ -1,3 +1,12 @@
+<!--
+ * @Author: York.yangyiny
+ * @Date: 2026-05-11 14:20:46
+ * @LastEditors: York
+ * @LastEditTime: 2026-05-11 16:55:17
+ * @FilePath: /e2e/DiffusionDrive/docs/train_eval.md
+ * @Description: Do not edit
+ * @Copyright: Copyright (c) 2026 yuyao. All rights reserved.
+-->
 # DiffusionDrive Training and Evaluation
 
 ## 1. Cache dataset for faster training and evaluation
@@ -35,5 +44,20 @@ python $NAVSIM_DEVKIT_ROOT/navsim/planning/script/run_pdm_score.py \
         worker=ray_distributed \
         agent.checkpoint_path=$CKPT \
         experiment_name=diffusiondrive_agent_eval
+```
+
+
+如果打断点，就修改为单进程
+```shell
+
+python $NAVSIM_DEVKIT_ROOT/planning/script/run_pdm_score.py \
+  train_test_split=navtest \
+  agent=diffusiondrive_agent \
+  worker=sequential \
+  agent.checkpoint_path=$CKPT \
+  experiment_name=diffusiondrive_agent_eval_debug
+
+
+
 ```
 
