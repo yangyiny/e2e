@@ -1,26 +1,28 @@
-proposal_sampling:
+proposal_sampling:  # 规定评估轨迹的时间采样方式
   _target_: nuplan.planning.simulation.trajectory.trajectory_sampling.TrajectorySampling
   _convert_: 'all'
   num_poses: 40
   interval_length: 0.1
+# 评估时需要一条包含 40 个未来轨迹点 的轨迹，每个点间隔 0.1 秒，PDM Score 会评估未来 4 秒的驾驶行为。
+#  _target_ 是 Hydra 的对象创建路径，instantiate(cfg.simulator) 时会创建这个类的实例。Hydra 会根据 _target_ 自动创建 Python 对象。
 
-simulator:
+simulator:  # 拿模型输出的轨迹，在 PDM 的规则下做一次非反应式仿真。
   _target_: navsim.planning.simulation.planner.pdm_planner.simulation.pdm_simulator.PDMSimulator
   _convert_: 'all'
   proposal_sampling: ${proposal_sampling}
 
-scorer: 
+scorer: # 评估轨迹的时间轴
   _target_: navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer.PDMScorer
   _convert_: 'all'
   proposal_sampling: ${proposal_sampling}
-  config: 
+  config: # 不同权重
     _target_: navsim.planning.simulation.planner.pdm_planner.scoring.pdm_scorer.PDMScorerConfig
     _convert_: 'all'
     # weighted metric weights
-    progress_weight: 5.0
-    ttc_weight: 5.0
-    comfortable_weight: 2.0
-    driving_direction_weight: 0.0
+    progress_weight: 5.0  # 前进距离的权重
+    ttc_weight: 5.0 # time-To-Collision 碰撞时间风险的权重
+    comfortable_weight: 2.0 # 舒适性权重,主要体现在加速度和转向的平滑程度上
+    driving_direction_weight: 0.0 # 行驶方向指标权重
 
     # thresholds
     driving_direction_horizon: 1.0  # [s] (driving direction)

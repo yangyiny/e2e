@@ -3,16 +3,21 @@ hydra:
     dir: ${output_dir}
   output_subdir: ${output_dir}/code/hydra           # Store hydra's config breakdown here for debugging
   searchpath:                                       # Only <exp_dir> in these paths are discoverable
-    - pkg://navsim.planning.script.config.common 
+    - pkg://navsim.planning.script.config.common # 去找配置的路径
   job:
     chdir: False
-
-defaults:
+# Hydra 默认有时会切换当前工作目录到输出目录。这里设置 False，表示程序运行时的当前工作目录不变。
+defaults: # 文件名字
   - default_common
   - default_evaluation
   - default_scoring_parameters
-  - agent: constant_velocity_agent
+  - agent: constant_velocity_agent  # 默认agent 主要测试环境是否ok
   - _self_
   - override train_test_split: navtest
 
 metric_cache_path: ${oc.env:NAVSIM_EXP_ROOT}/metric_cache # path to metric cache
+
+# 这里的变量的名字来与源配置文件：navsim/planning/script/config/common/default_evaluation.yaml
+#_self_ 是 Hydra defaults 里的一个特殊标记，意思是：当前这个 YAML 文件本身，也要参与配置合并。
+# defaults 是“导入别人”，_self_ 是“把我自己也算进去”。
+

@@ -125,7 +125,7 @@ class TransfuserAgent(AbstractAgent):
         return {'optimizer': optimizer, 'lr_scheduler': scheduler}
 
     def get_coslr_optimizers(self):
-        import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
         optimizer_cfg = dict(type=self._config.optimizer_type, 
                             lr=self._lr, 
                             weight_decay=self._config.weight_decay,
@@ -158,7 +158,7 @@ class TransfuserAgent(AbstractAgent):
             params = self._transfuser_model.parameters()
         
         optimizer = build_from_configs(optim, optimizer_cfg, params=params)
-        # import ipdb; ipdb.set_trace()
+        import ipdb; ipdb.set_trace()
         if paramwise_cfg:
             for pg, (_, pg_cfg) in zip(pgs, paramwise_cfg['name'].items()):
                 cfg = {}

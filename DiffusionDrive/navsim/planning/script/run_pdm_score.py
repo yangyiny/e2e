@@ -123,7 +123,6 @@ def main(cfg: DictConfig) -> None:
 
     build_logger(cfg)  # 初始化日志系统；来自 nuPlan，决定日志格式、等级、输出目录等。
     worker = build_worker(cfg)  # 根据 cfg.worker 创建 worker pool；例如 sequential、ray_distributed。
-
     # 主进程先创建一个轻量 SceneLoader，只用于扫描 token 列表。
     # 这里不做模型推理，也不需要相机/LiDAR 数据，所以 sensor_blobs_path=None。
     # TODO: 原作者说明：未来可从 metadata 推断每个 log 的 token，避免这里同时加载 scene 和 metric cache 索引。
@@ -161,6 +160,7 @@ def main(cfg: DictConfig) -> None:
     average_row["token"] = "average"  # 平均行的 token 字段标记为 average。
     average_row["valid"] = pdm_score_df["valid"].all()  # 只有所有 token 都有效时，平均行 valid 才为 True。
     pdm_score_df.loc[len(pdm_score_df)] = average_row  # 将平均行追加到表格最后。
+    import pdb; pdb.set_trace()
 
     save_path = Path(cfg.output_dir)  # 结果输出目录，通常由 NAVSIM_EXP_ROOT、experiment_name、experiment_uid 组成。
     timestamp = datetime.now().strftime("%Y.%m.%d.%H.%M.%S")  # 用当前时间生成 csv 文件名。
