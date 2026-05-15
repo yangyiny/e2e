@@ -54,7 +54,6 @@ class TransfuserAgent(AbstractAgent):
         self.init_from_pretrained()
 
     def init_from_pretrained(self):
-        import ipdb; ipdb.set_trace()
         if self._checkpoint_path:
             if torch.cuda.is_available():
                 checkpoint = torch.load(self._checkpoint_path)

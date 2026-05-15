@@ -86,7 +86,7 @@ def run_pdm_score(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[D
             agent_input = scene_loader.get_agent_input_from_token(token)  # 加载当前 token 的 agent 输入，包括历史状态和所需传感器数据。
             if agent.requires_scene:  # 某些 agent 需要完整 scene 对象；先检查 agent 的接口声明。
                 scene = scene_loader.get_scene_from_token(token)  # 如果需要，就额外加载完整 scene。
-                trajectory = agent.compute_trajectory(agent_input, scene)  # 调用 agent 生成轨迹；需要 scene 的 agent 走这个分支。
+                trajectory = agent.compute_trajectory(agent_input, scene)  # 调用 agent 生成轨迹；需要 scene 的 agent 走这个分支。从这里进入模型
             else:
                 trajectory = agent.compute_trajectory(agent_input)  # 调用 agent 生成轨迹；DiffusionDrive 通常走这个分支。
 
